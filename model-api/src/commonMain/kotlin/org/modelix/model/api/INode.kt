@@ -222,6 +222,23 @@ interface INode {
     fun moveChild(role: IChildLink, index: Int, child: INode) = moveChild(role.key(this), index, child)
     fun addNewChild(role: IChildLink, index: Int, concept: IConcept?): INode = addNewChild(role.key(this), index, concept)
     fun addNewChild(role: IChildLink, index: Int, concept: IConceptReference?): INode = addNewChild(role.key(this), index, concept)
+
+    /**
+     * Some implementations of INode may not be able to store arbitrarily structured models, but are adapters to other
+     * data structures may need more information than just the concept to instantiate the child. Often this is just
+     * a property such as the name.
+     *
+     * This function allows providing that required information. In case of a synchronization the sync algorithm just
+     * passes the node of the source model that it tries to copy. The INode is allowed to copy as much of the
+     * [templateNode] as it wants. The caller should not assume any more being copied as if it just provided the
+     * concept, but also expect the whole subtree being copied.
+     *
+     * Another valid use case for this method might be bidirectional model transformations. It's similar to a simple
+     * model synchronization in these sense that there two models where changes in one are applied to the other side,
+     * but part of the synchronization needs to be delegated to the INode implementation.
+     */
+    fun addNewChild(role: IChildLink, index: Int, templateNode: INode): INode = addNewChild(role, index, templateNode.concept)
+
     fun getReferenceTarget(link: IReferenceLink): INode? = getReferenceTarget(link.key(this))
     fun setReferenceTarget(link: IReferenceLink, target: INode?) = setReferenceTarget(link.key(this), target)
     fun setReferenceTarget(role: IReferenceLink, target: INodeReference?) = setReferenceTarget(role.key(this), target)

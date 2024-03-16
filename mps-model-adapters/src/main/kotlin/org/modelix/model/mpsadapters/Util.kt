@@ -31,3 +31,29 @@ private fun IRole.conformsToRole(other: IRole): Boolean {
         this.getUID().contains(other.getSimpleName()) ||
         this.getSimpleName() == other.getSimpleName()
 }
+
+internal fun <T : IRole, R> T.switch() = RoleSwitch<T, R>(this)
+
+internal class RoleSwitch<E : IRole, R>(val roleToMatch: E) {
+    private val cases: MutableList<Case> = ArrayList()
+    private var elseHandler: () -> R = { error("Unhandled role: $roleToMatch") }
+
+    fun case(selector: E, handler: () -> R) = also {
+        cases += Case(selector, handler)
+    }
+
+    fun orElse(handler: () -> R) = also {
+        elseHandler = handler
+    }
+
+    fun execute(): R {
+        val matchingCases = cases.filter { roleToMatch.conformsToRole(it.selector) }
+        return when (matchingCases.size) {
+            0 -> elseHandler()
+            1 -> matchingCases.single().handler()
+            else -> error("Multiple matching handlers found for $roleToMatch: " + matchingCases.map { it.selector })
+        }
+    }
+
+    private inner class Case(val selector: E, val handler: () -> R)
+}
