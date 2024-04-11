@@ -16,6 +16,7 @@ package org.modelix.model.client2
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.call.body
+import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.ResponseException
@@ -54,10 +55,12 @@ import org.modelix.model.api.INode
 import org.modelix.model.api.IdGeneratorDummy
 import org.modelix.model.api.TreePointer
 import org.modelix.model.api.getRootNode
+import org.modelix.model.api.runSynchronized
 import org.modelix.model.client.IdGenerator
 import org.modelix.model.lazy.BranchReference
 import org.modelix.model.lazy.CLTree
 import org.modelix.model.lazy.CLVersion
+import org.modelix.model.lazy.IDeserializingKeyValueStore
 import org.modelix.model.lazy.ObjectStoreCache
 import org.modelix.model.lazy.RepositoryId
 import org.modelix.model.lazy.computeDelta
@@ -73,6 +76,8 @@ import org.modelix.modelql.core.IMonoStep
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+class VersionNotFoundException(val versionHash: String) : Exception("Version $versionHash not found")
+
 class ModelClientV2(
     private val httpClient: HttpClient,
     val baseUrl: String,
@@ -81,12 +86,18 @@ class ModelClientV2(
     private var clientId: Int = 0
     private var idGenerator: IIdGenerator = IdGeneratorDummy()
     private var serverProvidedUserId: String? = null
-    private val kvStore = MapBasedStore()
-    val store = ObjectStoreCache(kvStore) // TODO the store will accumulate garbage
+
+    // TODO the store will accumulate garbage
+    private val storeForRepository: MutableMap<RepositoryId?, IDeserializingKeyValueStore> = HashMap()
 
     suspend fun init() {
         updateClientId()
         updateUserId()
+    }
+
+    private fun getStore(repository: RepositoryId?) = runSynchronized(storeForRepository) { storeForRepository.getOrPut(repository) { ObjectStoreCache(MapBasedStore()) } }
+    private fun getRepository(store: IDeserializingKeyValueStore): RepositoryId? {
+        return storeForRepository.asSequence().first { it.value == store }.key
     }
 
     private suspend fun updateClientId() {
@@ -126,14 +137,19 @@ class ModelClientV2(
     override fun getUserId(): String? = clientProvidedUserId ?: serverProvidedUserId
 
     override suspend fun initRepository(repository: RepositoryId): IVersion {
+        return initRepository(repository, false)
+    }
+
+    suspend fun initRepository(repository: RepositoryId, legacyGlobalStorage: Boolean = false): IVersion {
         return httpClient.preparePost {
             url {
                 takeFrom(baseUrl)
                 appendPathSegmentsEncodingSlash("repositories", repository.id, "init")
+                if (legacyGlobalStorage) parameters["legacyGlobalStorage"] = legacyGlobalStorage.toString()
             }
             useVersionStreamFormat()
         }.execute { response ->
-            createVersion(null, response.readVersionDelta())
+            createVersion(getStore(repository), null, response.readVersionDelta())
         }
     }
 
@@ -191,17 +207,24 @@ class ModelClientV2(
     @Deprecated("repository ID is required for permission checks")
     @DeprecationInfo("3.7.0", "May be removed with the next major release. Also remove the endpoint from the model-server.")
     override suspend fun loadVersion(versionHash: String, baseVersion: IVersion?): IVersion {
-        return httpClient.prepareGet {
-            url {
-                takeFrom(baseUrl)
-                appendPathSegments("versions", versionHash)
-                if (baseVersion != null) {
-                    parameters["lastKnown"] = (baseVersion as CLVersion).getContentHash()
+        val repositoryIdFromBaseVersion = (baseVersion as? CLVersion)?.let { getRepository(it.store) }
+        if (repositoryIdFromBaseVersion != null) {
+            return doLoadVersion(repositoryIdFromBaseVersion, versionHash, baseVersion)
+        } else {
+            // try finding the version in any repository
+            for (repositoryId in listRepositories() + null) {
+                try {
+                    return doLoadVersion(repositoryId, versionHash, baseVersion)
+                } catch (ex: ClientRequestException) {
+                    when (ex.response.status) {
+                        HttpStatusCode.NotFound -> {}
+                        HttpStatusCode.Unauthorized -> {}
+                        HttpStatusCode.Forbidden -> {}
+                        else -> throw ex
+                    }
                 }
             }
-            useVersionStreamFormat()
-        }.execute { response ->
-            createVersion(baseVersion as CLVersion?, response.readVersionDelta())
+            throw VersionNotFoundException(versionHash)
         }
     }
 
@@ -210,17 +233,29 @@ class ModelClientV2(
         versionHash: String,
         baseVersion: IVersion?,
     ): IVersion {
+        return doLoadVersion(repositoryId, versionHash, baseVersion)
+    }
+
+    private suspend fun doLoadVersion(
+        repositoryId: RepositoryId?,
+        versionHash: String,
+        baseVersion: IVersion?,
+    ): IVersion {
         return httpClient.prepareGet {
             url {
                 takeFrom(baseUrl)
-                appendPathSegments("repositories", repositoryId.id, "versions", versionHash)
+                if (repositoryId == null) {
+                    appendPathSegments("versions", versionHash)
+                } else {
+                    appendPathSegments("repositories", repositoryId.id, "versions", versionHash)
+                }
                 if (baseVersion != null) {
                     parameters["lastKnown"] = (baseVersion as CLVersion).getContentHash()
                 }
             }
             useVersionStreamFormat()
         }.execute { response ->
-            createVersion(baseVersion as CLVersion?, response.readVersionDelta())
+            createVersion(getStore(repositoryId), baseVersion as CLVersion?, response.readVersionDelta())
         }
     }
 
@@ -247,7 +282,7 @@ class ModelClientV2(
             contentType(ContentType.Application.Json)
             setBody(delta)
         }.execute { response ->
-            createVersion(version, response.readVersionDelta())
+            createVersion(getStore(branch.repositoryId), version, response.readVersionDelta())
         }
     }
 
@@ -277,7 +312,7 @@ class ModelClientV2(
             }
             useVersionStreamFormat()
         }.execute { response ->
-            val receivedVersion = createVersion(lastKnownVersion, response.readVersionDelta())
+            val receivedVersion = createVersion(getStore(branch.repositoryId), lastKnownVersion, response.readVersionDelta())
             LOG.debug { "${clientId.toString(16)}.pull($branch, $lastKnownVersion) -> $receivedVersion" }
             receivedVersion
         }
@@ -294,7 +329,7 @@ class ModelClientV2(
         }.execute { response ->
             val receivedVersion = when (response.status) {
                 HttpStatusCode.NotFound -> null
-                HttpStatusCode.OK -> createVersion(null, response.readVersionDelta())
+                HttpStatusCode.OK -> createVersion(getStore(branch.repositoryId), null, response.readVersionDelta())
                 else -> throw ResponseException(response, response.bodyAsText())
             }
             LOG.debug { "${clientId.toString(16)}.pullIfExists($branch) -> $receivedVersion" }
@@ -344,7 +379,7 @@ class ModelClientV2(
             }
             useVersionStreamFormat()
         }.execute { response ->
-            val receivedVersion = createVersion(lastKnownVersion, response.readVersionDelta())
+            val receivedVersion = createVersion(getStore(branch.repositoryId), lastKnownVersion, response.readVersionDelta())
             LOG.debug { "${clientId.toString(16)}.poll($branch, $lastKnownVersion) -> $receivedVersion" }
             receivedVersion
         }
@@ -370,7 +405,7 @@ class ModelClientV2(
         httpClient.close()
     }
 
-    private suspend fun createVersion(baseVersion: CLVersion?, delta: VersionDeltaStream): CLVersion {
+    private suspend fun createVersion(store: IDeserializingKeyValueStore, baseVersion: CLVersion?, delta: VersionDeltaStream): CLVersion {
         delta.getObjectsAsFlow().collect {
             HashUtil.checkObjectHash(it.first, it.second)
             store.keyValueStore.put(it.first, it.second)
@@ -385,7 +420,7 @@ class ModelClientV2(
         }
     }
 
-    private suspend fun createVersion(baseVersion: CLVersion?, delta: Flow<String>): CLVersion {
+    private suspend fun createVersion(store: IDeserializingKeyValueStore, baseVersion: CLVersion?, delta: Flow<String>): CLVersion {
         var firstHash: String? = null
         var isHash = true
         var lastHash: String? = null
@@ -578,7 +613,7 @@ suspend fun <T> IModelClientV2.runWriteOnBranch(branchRef: BranchReference, body
             .takeIf { it != branchRef }
             ?.let { client.pullIfExists(it) } // master branch
         ?: client.initRepository(branchRef.repositoryId)
-    val branch = OTBranch(TreePointer(baseVersion.getTree(), client.getIdGenerator()), client.getIdGenerator(), (client as ModelClientV2).store)
+    val branch = OTBranch(TreePointer(baseVersion.getTree(), client.getIdGenerator()), client.getIdGenerator(), (baseVersion as CLVersion).store)
     val result = branch.computeWrite {
         body(branch)
     }

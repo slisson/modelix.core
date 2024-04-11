@@ -35,6 +35,18 @@
                     <property name="backups" value="0"/>
                     <property name="statisticsEnabled" value="true"/>
                 </bean>
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="mutable_objects"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="backups" value="0"/>
+                    <property name="statisticsEnabled" value="true"/>
+                </bean>
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="immutable_objects"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="backups" value="0"/>
+                    <property name="statisticsEnabled" value="true"/>
+                </bean>
             </list>
         </property>
     </bean>

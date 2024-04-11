@@ -23,6 +23,7 @@ import org.json.JSONArray;
 import org.junit.Test;
 import org.modelix.model.server.handlers.KeyValueLikeModelServer;
 import org.modelix.model.server.handlers.RepositoriesManager;
+import org.modelix.model.server.store.IStoreClientKt;
 import org.modelix.model.server.store.InMemoryStoreClient;
 import org.modelix.model.server.store.LocalModelClient;
 
@@ -32,7 +33,10 @@ public class RestModelServerTest {
     public void testCollectUnexistingKey() {
         KeyValueLikeModelServer rms =
                 new KeyValueLikeModelServer(
-                        new RepositoriesManager(new LocalModelClient(new InMemoryStoreClient())));
+                        new RepositoriesManager(
+                                new LocalModelClient(
+                                        IStoreClientKt.forGlobalRepository(
+                                                new InMemoryStoreClient()))));
         JSONArray result = rms.collect("unexistingKey");
         assertEquals(1, result.length());
         assertEquals(new HashSet<>(Arrays.asList("key")), result.getJSONObject(0).keySet());
@@ -41,7 +45,7 @@ public class RestModelServerTest {
 
     @Test
     public void testCollectExistingKeyNotHash() {
-        InMemoryStoreClient storeClient = new InMemoryStoreClient();
+        var storeClient = IStoreClientKt.forGlobalRepository(new InMemoryStoreClient());
         storeClient.put("existingKey", "foo", false);
         KeyValueLikeModelServer rms =
                 new KeyValueLikeModelServer(
@@ -56,7 +60,7 @@ public class RestModelServerTest {
 
     @Test
     public void testCollectExistingKeyHash() {
-        InMemoryStoreClient storeClient = new InMemoryStoreClient();
+        var storeClient = IStoreClientKt.forGlobalRepository(new InMemoryStoreClient());
         storeClient.put("existingKey", "hash-*0123456789-0123456789-0123456789-00001", false);
         storeClient.put("hash-*0123456789-0123456789-0123456789-00001", "bar", false);
         KeyValueLikeModelServer rms =
@@ -78,7 +82,7 @@ public class RestModelServerTest {
 
     @Test
     public void testCollectExistingKeyHashChained() {
-        InMemoryStoreClient storeClient = new InMemoryStoreClient();
+        var storeClient = IStoreClientKt.forGlobalRepository(new InMemoryStoreClient());
         storeClient.put("root", "hash-*0123456789-0123456789-0123456789-00001", false);
         storeClient.put(
                 "hash-*0123456789-0123456789-0123456789-00001",
@@ -127,7 +131,7 @@ public class RestModelServerTest {
 
     @Test
     public void testCollectExistingKeyHashChainedWithRepetitions() {
-        InMemoryStoreClient storeClient = new InMemoryStoreClient();
+        var storeClient = IStoreClientKt.forGlobalRepository(new InMemoryStoreClient());
         storeClient.put("root", "hash-*0123456789-0123456789-0123456789-00001", false);
         storeClient.put(
                 "hash-*0123456789-0123456789-0123456789-00001",

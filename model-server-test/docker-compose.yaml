@@ -1,0 +1,11 @@
+services:
+  db:
+    build:
+      dockerfile: Dockerfile
+      context: docker
+    environment:
+      - POSTGRES_PASSWORD=modelix
+      - POSTGRES_USER=modelix
+      - POSTGRES_DB=modelix
+    ports:
+      - 5432

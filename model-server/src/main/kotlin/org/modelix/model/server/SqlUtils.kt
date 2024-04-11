@@ -42,10 +42,12 @@ internal class SqlUtils(private val connection: Connection) {
             val stmt = connection.createStatement()
             stmt.execute(creationSql)
         }
-        val stmt = connection.createStatement()
-        stmt.execute(
-            "GRANT ALL ON TABLE $schemaName.$tableName TO $username;",
-        )
+        try {
+            val stmt = connection.createStatement()
+            stmt.execute("GRANT ALL ON TABLE $schemaName.$tableName TO $username;")
+        } catch (ex: SQLException) {
+            LOG.error("Failed to change permissions on $schemaName.$tableName", ex)
+        }
     }
 
     @Throws(SQLException::class)
@@ -54,8 +56,12 @@ internal class SqlUtils(private val connection: Connection) {
             val stmt = connection.createStatement()
             stmt.execute("CREATE SCHEMA $schemaName;")
         }
-        val stmt = connection.createStatement()
-        stmt.execute("GRANT ALL ON SCHEMA $schemaName TO $username;")
+        try {
+            val stmt = connection.createStatement()
+            stmt.execute("GRANT ALL ON SCHEMA $schemaName TO $username;")
+        } catch (ex: SQLException) {
+            LOG.error("Failed to change permissions on $schemaName", ex)
+        }
     }
 
     fun ensureSchemaInitialization() {
@@ -78,10 +84,35 @@ internal class SqlUtils(private val connection: Connection) {
                 "model",
                 """
                     CREATE TABLE $schemaName.model (
-                        key character varying NOT NULL,
-                        value character varying,
-                        reachable boolean,
+                        key VARCHAR(65535) NOT NULL,
+                        value VARCHAR(65535),
                         CONSTRAINT kv_pkey PRIMARY KEY (key)
+                    );
+                """,
+            )
+            ensureTableIsPresent(
+                schemaName,
+                userName,
+                "immutable_objects",
+                """
+                    CREATE TABLE $schemaName.immutable_objects (
+                        key VARCHAR(65535) NOT NULL,
+                        repository VARCHAR(65535) NULL,
+                        value VARCHAR(65535),
+                        CONSTRAINT immutable_objects_pkey PRIMARY KEY (key, repository)
+                    );
+                """,
+            )
+            ensureTableIsPresent(
+                schemaName,
+                userName,
+                "mutable_objects",
+                """
+                    CREATE TABLE $schemaName.mutable_objects (
+                        key VARCHAR(65535) NOT NULL,
+                        repository VARCHAR(65535) NULL,
+                        value VARCHAR(65535),
+                        CONSTRAINT mutable_objects_pkey PRIMARY KEY (key, repository)
                     );
                 """,
             )
