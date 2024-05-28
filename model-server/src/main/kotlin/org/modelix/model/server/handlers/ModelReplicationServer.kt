@@ -60,6 +60,7 @@ import org.modelix.model.lazy.CLVersion
 import org.modelix.model.lazy.RepositoryId
 import org.modelix.model.operations.OTBranch
 import org.modelix.model.persistent.HashUtil
+import org.modelix.model.server.api.v2.ImmutableObjectsStream
 import org.modelix.model.server.api.v2.VersionDelta
 import org.modelix.model.server.api.v2.VersionDeltaStream
 import org.modelix.model.server.api.v2.VersionDeltaStreamV2
@@ -219,20 +220,16 @@ class ModelReplicationServer(
             }
         }
         post<Paths.postRepositoryObjectsGetAll> {
-            val repository = RepositoryId(call.parameters["repository"]!!) // will be used in the future
-            val keys = call.receiveStream().bufferedReader().use { reader ->
-                reader.lineSequence().toHashSet()
-            }
-            val objects = withContext(Dispatchers.IO) { modelClient.store.getAll(keys) }
-            call.respondTextWriter(contentType = VersionDeltaStream.CONTENT_TYPE) {
-                objects.forEach {
-                    append(it.key)
-                    append("\n")
-                    append(it.value)
-                    append("\n")
+            runWithRepository {
+                val keys = call.receiveStream().bufferedReader().use { reader ->
+                    reader.lineSequence().toHashSet()
                 }
-                // additional empty line indicates end of stream and can be used to verify completeness of data transfer
-                append("\n")
+                val objects = withContext(Dispatchers.IO) { modelClient.store.getAll(keys) }.checkValuesNotNull {
+                    "Object not found: $it"
+                }
+                call.respondTextWriter(contentType = ImmutableObjectsStream.CONTENT_TYPE) {
+                    ImmutableObjectsStream.encode(this, objects)
+                }
             }
         }
         get<Paths.pollRepositoryBranchHash> {
@@ -441,3 +438,10 @@ private fun Flow<String>.withSeparator(separator: String) = flow {
         emit(it)
     }
 }
+
+@Suppress("UNCHECKED_CAST")
+private fun <K, V> Map<K, V?>.checkValuesNotNull(lazyMessage: (K) -> Any): Map<K, V> = apply {
+    for (entry in this) {
+        checkNotNull(entry.value) { lazyMessage(entry.key) }
+    }
+} as Map<K, V>
